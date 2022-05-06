@@ -1,0 +1,253 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+#Install and open packages
+
+# install.packages("r5r")
+# install.packages("akima")
+
+# allocate RAM memory to Java
+options(java.parameters = "-Xmx2G")
+
+library(r5r)
+library(sf)
+library(data.table)
+library(ggplot2)
+library(akima)
+library(dplyr)
+
+
+```
+
+```{r}
+#Set up matrix
+
+
+# 1) build transport network, pointing to the path where OSM and GTFS data are stored
+
+#path <- system.file("extdata/poa", package = "r5r")
+path <- "G:/Desktop/Folders/Edu/Summer 2021/Data Files/R5R data files"
+r5r_core <- setup_r5(data_path = path, verbose = FALSE)
+
+# 2) load origin/destination points and set arguments
+
+#points <- read.csv(system.file("extdata/poa/poa_hexgrid.csv", package = "r5r"))
+
+#Load in CENTROID FILE
+point_path <- "G:/Desktop/Folders/Edu/Summer 2021/Data Files/ArcGIS Files/Edm_Neighbourhood_Boundary/edm_lat_lon_centroids.csv"
+points <- read.csv(point_path)
+points$ï..id <- as.character(points$ï..id)#need to change id to char.
+points <- points %>% rename(id = ï..id) #rename id
+
+#Load in OPPORTUNITY POI FILE
+opp_path <- "G:/Desktop/Folders/Edu/Summer 2021/Data Files/ArcGIS Files/COE_points.csv"
+opp <- read.csv(opp_path)
+opp$id <- as.character(opp$id)#need to change id to char.
+#opp <- opp %>% rename(id = ï..DBUID) #rename id
+
+#Subset opp to only include health facilities
+health_opp <- subset(opp, SIC_MJ_GRP==62)
+
+
+mode <- c("WALK", "BUS")          #Check to see how to change walk speed
+max_walk_dist <- 1000   # meters
+max_trip_duration <- 60 # minutes
+time_window <- 120
+percentiles <- c(5,25,50,75)
+departure_datetime <- as.POSIXct("04-05-2021 14:00:00",
+                                 format = "%d-%m-%Y %H:%M:%S")
+
+# 3.1) calculate a travel time matrix
+ttm <- travel_time_matrix(r5r_core = r5r_core,
+                          origins = points,
+                          destinations = points,
+                          mode = mode,
+                          departure_datetime = departure_datetime,
+                          max_walk_dist = max_walk_dist,
+                          max_trip_duration = max_trip_duration,
+                          time_window = time_window,
+                          percentiles = percentiles,
+                          verbose = FALSE)
+
+head(ttm)
+
+# 3.2) or get detailed info on multiple alternative routes
+# dit <- detailed_itineraries(r5r_core = r5r_core,
+#                             origins = points,
+#                             destinations = points,
+#                             mode = mode,
+#                             departure_datetime = departure_datetime,
+#                             max_walk_dist = max_walk_dist,
+#                             shortest_path = FALSE,
+#                             verbose = FALSE)
+# 
+# head(dit)
+
+
+```
+
+
+```{r}
+#Mapping isochrones
+
+
+#subset the TTM departing from a specific origin point
+central_bus_stn <- points[97,] #set UNIVERSITY station as central hub.
+ttm_tw <- subset(ttm, toId %in% central_bus_stn$id)
+
+#reshape data
+plot_data <- setnames(ttm_tw, "travel_time_p050", "mediantt") %>%
+             melt(., measure = patterns("^travel_time_p"),
+                     variable = "percentile",
+                     value = "travel_time")
+
+# #plot data points (not map)
+# ggplot(data=plot_data, aes(y = travel_time, x = reorder(fromId, mediantt))) + 
+#   geom_point(alpha = 0.1, size = 0.7) +
+#   geom_line(aes(y=mediantt, group=toId), color="#FE9F45", size=1.5) +
+#   expand_limits(y = 120) +
+#   scale_y_continuous(breaks = c(0,30,60,90,120)) +
+#   theme_minimal() +
+#   theme(panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         axis.text.x = element_blank(),
+#         axis.ticks = element_blank(),
+#         panel.border = element_rect(fill = NA, colour = "grey80", size = 1)) +
+#   labs(title = "", y="Travel time (min)", x = "Origins ordered by median travel time")
+# #not sure why some of the data gets removed during the plot though.
+
+
+
+
+#extract OSM network
+street_net <-street_network_to_sf(r5r_core)
+
+#select trips departing the bus central station and add coords of destinations
+travel_times <- ttm[fromId %in% central_bus_stn$id]
+travel_times[points, on=c("toId" = "id"), `:=` (lon = i.lon, lat = i.lat)]
+
+#interpolate estimates to get spatially smooth results
+travel_times.interp <- with(na.omit(travel_times), interp(lon, lat, travel_time_p050)) %>%
+  with(cbind(travel_time=as.vector(z),
+             x=rep(x, times=length(y)),
+             y=rep(y, each=length(x)))) %>%
+  as.data.frame() %>% na.omit()
+
+#find isochrone map's bounding box and crop the map view to it
+bb_x <- c(min(travel_times.interp$x), max(travel_times.interp$x))
+bb_y <- c(min(travel_times.interp$y), max(travel_times.interp$y))
+
+# #plot the isochrone map
+# ggplot(travel_times.interp)+
+#   geom_contour_filled(aes(x=x, y=y, z=travel_time), alpha=0.8) +
+#   geom_sf(data = street_net$edges, colour = "gray55", size=0.1, alpha=0.7) +
+#   geom_point(aes(x=lon, y=lat, color="Central bus\nstation"), data=central_bus_stn) +
+#   scale_fill_viridis_d(direction=-1, option = "B")+
+#   scale_color_manual(values=c("Central bus\nstation" = "black"))+
+#   scale_x_continuous(expand=c(0,0)) +
+#   scale_y_continuous(expand=c(0,0)) +
+#   coord_sf(xlim = bb_x, ylim = bb_y) +
+#   labs(fill = "travel time (mins)", color="") +
+#   theme_minimal()+
+#   theme(axis.title = element_blank())
+
+
+```
+
+
+```{r}
+#Accessibility metrics
+#sums all of the opportunities accessible from each location in less than a cutoff time.
+
+#merge POI info to TTM
+ttm[points, on=c("toId"="id"),  schools:=i.schools ] #joining by type of poi. point table to opp table
+
+#find number of schools accessible
+access <- ttm[travel_time_p050 <= 20, .(acc = sum(schools)), by = fromId]
+
+#interpolate to smooth results
+access.interp <- access %>% 
+  inner_join(points, by=c("fromId"="id")) %>%
+  with(interp(lon, lat, acc)) %>%
+    with(cbind(acc=as.vector(z),
+               x=rep(x, times=length(y)),
+               y=rep(y, each=length(x)))) %>% as.data.frame()
+
+# #plot school accessibility map
+# ggplot(na.omit(access.interp))+
+#   geom_contour_filled(aes(x=x, y=y, z=acc), alpha=0.8) +
+#   geom_sf(data = street_net$edges, colour = "gray55", size=0.1, alpha=0.7) +
+#   geom_point(aes(x=lon, y=lat, color="Central bus\nstation"), data=central_bus_stn) +
+#   scale_fill_viridis_d(direction=-1, option = "B")+
+#   scale_x_continuous(expand=c(0,0)) +
+#   scale_y_continuous(expand=c(0,0)) +
+#   coord_sf(xlim = bb_x, ylim = bb_y) +
+#   labs(fill = "Schools within 20 minutes/n(median travel time)") +
+#   theme_minimal()+
+#   theme(axis.title = element_blank())
+
+
+```
+
+
+```{r fig.height=6, fig.width=6}
+# interpolate estimates to get spatially smooth result
+access.interp <- access %>%
+  inner_join(points, by=c('fromId'='id')) %>%
+  with(interp(lon, lat, acc)) %>%
+                        with(cbind(acc=as.vector(z),  # Column-major order
+                                   x=rep(x, times=length(y)),
+                                   y=rep(y, each=length(x)))) %>% as.data.frame() %>% na.omit()
+
+# find results' bounding box to crop the map
+bb_x <- c(min(access$x), max(access$x)) #REMOVED INTERP PART
+bb_y <- c(min(access$y), max(access$y)) #REMOVED INTERP PART
+
+# extract OSM network, to plot over map
+street_net <- street_network_to_sf(r5r_core)
+
+# plot
+accessibility_map <- ggplot(na.omit(access)) + #REMOVED INTERP PART
+  geom_contour_filled(aes(x=x, y=y, z=acc), alpha=.8) +
+  geom_sf(data = street_net$edges, color = "gray55", size=0.035, alpha = 0.5) + ##
+  scale_fill_viridis_d(direction = -1, option = 'B') +
+  scale_x_continuous(expand=c(0,0)) +
+  scale_y_continuous(expand=c(0,0)) +
+  coord_sf(xlim = bb_x, ylim = bb_y) + 
+  labs(fill = "Schools within\n20 minutes\n(median travel time)") +
+  theme_minimal() +
+  theme(axis.title = element_blank())
+
+accessibility_map
+
+# pdf("G:/Desktop/Folders/Edu/Summer 2021/Data Files/ArcGIS Files/R5R data files/")
+# print(accessibility_map)
+# 
+# 
+# ?pdf
+
+# savepath <- "G:/Desktop/Folders/Edu/Summer 2021/Data Files/ArcGIS Files/Edm_Neighbourhood_Boundary"
+# 
+# ggsave(
+#   "accessibility_map",
+#   plot = accessibility_map,
+#   device = "png",
+#   path = savepath,
+#   scale = 3,
+#   width = 10,
+#   height = 10,
+#   units = c("in"),
+#   dpi = 300,
+#   limitsize = TRUE
+# )
+
+
+?ggsave
+```
+
+
+
+

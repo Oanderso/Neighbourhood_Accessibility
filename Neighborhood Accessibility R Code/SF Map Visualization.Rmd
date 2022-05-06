@@ -1,0 +1,226 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+#SF Mapping of Edmonton. 
+#Install packages, library
+
+# install.packages("sf")
+# install.packages("tmap")
+# install.packages("ggmap")
+# install.packages("ggthemes")
+# install.packages("rgeos")
+# install.packages("grid")
+# install.packages("gridExtra")
+# install.packages("reshape2")
+# install.packages("scales")
+# install.packages(c("rgdal", "htmlwidgets"), dependencies = TRUE)
+#install.packages("rgdal")
+#install.packages("geojsonsf")
+
+
+library(geojsonsf)
+library(sf)
+library(sp)
+library(tmap)
+library(dplyr)
+library(maptools)
+library(ggmap)
+library(forcats)
+library(ggthemes)
+library(rgeos)
+library(broom)
+library(plyr)
+library(grid)
+library(gridExtra)
+library(reshape2)
+library(scales)
+library("rgdal")
+library(tmap)
+library(leaflet) 
+
+
+```
+
+
+
+
+```{r}
+#use net map
+ 
+#manually definen bounding box of edmonton
+edm_map <- get_map(location =  c(left = -113.702 , bottom = 53.366 , right = -113.317, top = 53.6855 ), 
+        zoom = 10,
+        scale = 12,
+        maptype = "toner",
+        source = "osm"
+        )
+
+ggmap(edm_map)
+
+
+#set up map parameters
+mapTheme <- function(base_size = 12) {
+  theme(
+    text = element_text( color = "black"),
+    plot.title = element_text(size = 18,colour = "black"),
+    plot.subtitle=element_text(face="italic"),
+    plot.caption=element_text(hjust=0),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),
+    panel.grid.major = element_line("grey80", size = 0.1),
+    strip.text = element_text(size=12),
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "grey80", color = "white"),
+    plot.background = element_blank(),
+    legend.background = element_blank(),
+    legend.title = element_text(colour = "black", face = "italic"),
+    legend.text = element_text(colour = "black", face = "italic"))
+}
+# Define some palettes
+palette_9_colors <- c("#0DA3A0","#2999A9","#458FB2","#6285BB","#7E7CC4","#9A72CD","#B768D6","#D35EDF","#F055E9")
+palette_8_colors <- c("#0DA3A0","#2D97AA","#4D8CB4","#6E81BF","#8E76C9","#AF6BD4","#CF60DE","#F055E9")
+palette_7_colors <- c("#2D97AA","#4D8CB4","#6E81BF","#8E76C9","#AF6BD4","#CF60DE","#F055E9")
+palette_1_colors <- c("#0DA3A0")
+ 
+# Map it
+bmMap <- ggmap(edm_map) + mapTheme() + 
+  labs(title="Edmonton basemap")
+bmMap
+
+
+
+
+```
+
+```{r}
+#Create map of accessibility based on data crunched by R5R Edmonton TTM combined with neighborhood shapefile.
+
+#Explanation: https://www.infoworld.com/article/3505897/how-to-do-spatial-analysis-in-r-with-sf.html
+#sf documentation: https://cran.r-project.org/web/packages/sf/sf.pdf
+
+#Read in as poly file
+Edm_hoods <- st_read("G:/Desktop/Folders/Edu/Summer 2021/Data Files/ArcGIS Files/School Data/COUNT_ELEMENTARY_schools_per_hood.shp")
+plot(Edm_hoods) #plots all columns on the map. Can show number of schools per neighborhood
+# Define the bounding box
+# bbox <- Edm_hoods@bbox
+
+neighborhood_access <- acc_20min #from r5 notebook
+names(neighborhood_access) <- c("id", "accessible")
+
+Edm_hoods_dt <- as.data.table(Edm_hoods)
+names(Edm_hoods_dt) <- c("id","name","number","lon","lat","count","geometry")
+Edm_hoods_dt$id <- as.character(Edm_hoods_dt$id)#need to change id to char.
+
+
+Edm_hoods_dt <- left_join(Edm_hoods_dt, neighborhood_access, by = "id") #aggregated and joined data set
+Edm_hoods_dt <- as.data.table(Edm_hoods_dt)
+Edm_hoods_dt
+
+Edm_hoods_dt_sf <- st_as_sf(Edm_hoods_dt) #turns it back to SF object
+plot(Edm_hoods_dt_sf["accessible"], key.pos = 1) #plot the count column. Number of schools accessible within 20 minutes
+
+
+
+```
+```{r}
+#interactive map
+
+#resource https://cengel.github.io/R-spatial/mapping.html
+#tmap documentation: https://rdrr.io/cran/tmap/man/tm_polygons.html
+
+tm_shape(Edm_hoods_dt_sf) +
+  tm_polygons("accessible", 
+              style="pretty", #or "cat" for actual count 
+              title="Number of public\nschools accessible\nin 20 mins by neighborhood",
+              interactive=TRUE,
+              popup.vars="name",
+              popup.format=list()
+  )
+
+tmap_mode("plot") #changes between view mode (interactive) and plot mode (static)
+
+
+```
+
+
+```{r}
+#Interactive mapping with leaflet
+#can be used to create mobile friendly java based maps.
+#reference: https://cengel.github.io/R-spatial/mapping.html
+
+#need to manually repreject the map to get it to match with web projection
+Edm_hoods_WGS84 <- st_transform(Edm_hoods_dt_sf, 4326)
+
+leaflet(Edm_hoods_WGS84) %>%
+  addPolygons()
+
+
+pal_fun <- colorBin("YlOrRd", NULL, bins = 5) #colour options
+
+p_popup <- paste0(Edm_hoods_WGS84$name, "<strong> - Schools reachable in 20 mins: </strong>", Edm_hoods_WGS84$accessible) #popup options
+
+interactive_edmSchool_map <- leaflet(Edm_hoods_WGS84) %>%
+  addPolygons(
+    stroke = FALSE, # remove polygon borders
+    fillColor = ~pal_fun(accessible), # set fill color with function from above and value
+    fillOpacity = 0.6, smoothFactor = 0.5, # make it nicer
+    popup = p_popup, 
+    group = "Edm school data") %>% # add popup
+  
+  addTiles() %>% #automatically add basemap from OSM
+  addLegend("bottomright",  # location
+            pal=pal_fun,    # palette function
+            values=~accessible,  # value to be passed to palette function
+            title = 'Number of public\nschools accessible\nin 20 mins by neighborhood') %>% # legend title
+
+  addLayersControl(baseGroups = c("OSM", "Carto"), #turn on or off data layer
+                   overlayGroups = c("Edm school data"))  
+
+
+interactive_edmSchool_map
+
+```
+
+
+
+
+```{r}
+#Export
+
+saveWidget(interactive_edmSchool_map, 'G:/Desktop/Folders/Edu/Summer 2021/Data Files/R Code/interactive_edmSchool_map.html', selfcontained = FALSE)
+
+st_write(Edm_hoods_dt, "G:/Desktop/Folders/Edu/Summer 2021/Data Files/R Code/Edm_HighSchool_Access.shp") #writes the sf file to csv
+#see here for different export options https://cran.r-project.org/web/packages/sf/vignettes/sf2.html
+
+#Edm_hoods_gj <- sf_geojson(Edm_hoods_dt_sf)Apparently doesn't need to be converted, st_write only writes sf files...?
+
+bbox = st_bbox(c(xmin=-120.00, ymin=48.99, xmax=-109.99, ymax=60.00))
+
+Edm_crop_AB <- st_crop(Edm_hoods_dt_sf, bbox)
+
+Edm_hoods_dt_sf<- as.sf(Edm_hoods_dt_sf, extent = bbox)
+#st_write(Edm_hoods_dt_sf, "G:/Desktop/Folders/Edu/Summer 2021/Data Files/R Code/Edm_hoods_dt.geojson")
+#st_write(Edm_hoods_dt_sf, "G:/Desktop/Folders/Edu/Summer 2021/Data Files/R Code/Edm_hoods_CSV.csv")
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
